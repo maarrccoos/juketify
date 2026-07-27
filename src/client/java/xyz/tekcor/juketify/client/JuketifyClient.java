@@ -23,7 +23,10 @@ import xyz.tekcor.juketify.net.JukeboxCommandPayload;
 import xyz.tekcor.juketify.net.JukeboxFileChunkPayload;
 import xyz.tekcor.juketify.net.JukeboxFileRequestPayload;
 import xyz.tekcor.juketify.net.JukeboxFileStartPayload;
+import xyz.tekcor.juketify.net.JukeboxLibraryPayload;
 import xyz.tekcor.juketify.net.JukeboxPreparePayload;
+import xyz.tekcor.juketify.net.JukeboxProgressPayload;
+import xyz.tekcor.juketify.net.JukeboxQueuePayload;
 import xyz.tekcor.juketify.net.JukeboxRadiusPayload;
 import xyz.tekcor.juketify.net.JukeboxReadyPayload;
 import xyz.tekcor.juketify.net.JukeboxSearchFailedPayload;
@@ -81,6 +84,26 @@ public class JuketifyClient implements ClientModInitializer {
 					JukeboxPlayback.refreshRange();
 				}));
 
+		ClientPlayNetworking.registerGlobalReceiver(JukeboxLibraryPayload.TYPE, (payload, context) ->
+				context.client().execute(() -> ClientJukebox.setLibrary(payload.fileNames())));
+
+		ClientPlayNetworking.registerGlobalReceiver(JukeboxQueuePayload.TYPE, (payload, context) ->
+				context.client().execute(() -> ClientJukebox.setQueue(payload.nowPlaying(), payload.upcoming())));
+
+		ClientPlayNetworking.registerGlobalReceiver(JukeboxProgressPayload.TYPE, (payload, context) ->
+				context.client().execute(() -> {
+					ClientJukebox.setProgress(payload.fileName(), payload.percent());
+
+					if (context.client().gui != null && payload.percent() < 100) {
+						context.client().gui.setOverlayMessage(
+								Component.literal("Juketify: downloading "
+												+ ClientJukebox.label(payload.fileName())
+												+ " (" + payload.percent() + "%)")
+										.withStyle(ChatFormatting.YELLOW),
+								false);
+					}
+				}));
+
 		ClientPlayNetworking.registerGlobalReceiver(JukeboxSearchFailedPayload.TYPE, (payload, context) ->
 				context.client().execute(() -> {
 					if (context.client().gui != null) {
@@ -114,13 +137,6 @@ public class JuketifyClient implements ClientModInitializer {
 			return;
 		}
 
-		if (client.gui != null) {
-			client.gui.setOverlayMessage(
-					Component.literal("Juketify: downloading \"" + payload.fileName() + "\"...")
-							.withStyle(ChatFormatting.YELLOW),
-					false);
-		}
-
 		ClientPlayNetworking.send(new JukeboxFileRequestPayload(payload.pos(), payload.fileName()));
 	}
 
@@ -134,6 +150,7 @@ public class JuketifyClient implements ClientModInitializer {
 
 		if (track.isPresent()) {
 			JukeboxPlayback.play(track.get(), payload.pos(), payload.offsetMillis());
+			announce(client, track.get().label());
 			return;
 		}
 
@@ -142,5 +159,14 @@ public class JuketifyClient implements ClientModInitializer {
 		}
 
 		ClientPlayNetworking.send(new JukeboxFileRequestPayload(payload.pos(), payload.fileName()));
+	}
+
+	private static void announce(Minecraft client, String label) {
+		if (client.gui == null) {
+			return;
+		}
+
+		client.gui.setOverlayMessage(
+				Component.literal("Now playing: " + label).withStyle(ChatFormatting.GREEN), false);
 	}
 }

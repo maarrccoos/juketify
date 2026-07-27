@@ -29,17 +29,22 @@ everything rides over the same minecraft connection, game + the music itself, so
 
 hearing range is set with `/juketify radius <blocks>`, needs gamemaster. no args just tells you what it's currently set to. 16-128, defaults to 64.
 
+if sending tracks to people is choking your upload, `config/juketify.txt` has `chunksPerTick` and `inFlight`. lower them to go easier on the connection, raise them to send faster. the file has notes explaining both.
+
 ## using it
 
-right click a jukebox with an empty hand to open the search screen. holding a music disc still works normally.
+right click a jukebox with an empty hand to open it. holding a music disc still works normally.
 
-type something and hit enter. if you already have it, closest match plays instantly. if not, it searches online, downloads it, and plays for everyone in range from then on.
+you get a scrollable list of every track the server has, not just yours. click one to play it, or if something's already playing it goes on the queue instead. when a track ends the next one starts on its own.
 
-- **stop** stops it for everyone in range
+type in the box to filter the list. if nothing matches, hit enter and it searches online, downloads it, and adds it.
+
+- **stop** stops it and clears the queue for everyone in range
+- **skip** jumps to the next thing in the queue
 - **rescan** re-reads the music folder without restarting
 - breaking the jukebox stops it too
 
-joining mid-song, changing dimension, or walking into range gets you synced to where the track currently is instead of restarting it from the beginning.
+everyone in range sees what's playing, not just whoever put it on. joining mid-song, changing dimension, or walking into range syncs you to where the track currently is instead of restarting it.
 
 ## building
 

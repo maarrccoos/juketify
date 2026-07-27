@@ -4,12 +4,15 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -17,6 +20,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.stream.Stream;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 
@@ -43,13 +47,20 @@ import xyz.tekcor.juketify.net.JukeboxCommandPayload;
 import xyz.tekcor.juketify.net.JukeboxFileChunkPayload;
 import xyz.tekcor.juketify.net.JukeboxFileRequestPayload;
 import xyz.tekcor.juketify.net.JukeboxFileStartPayload;
+import xyz.tekcor.juketify.net.JukeboxLibraryPayload;
+import xyz.tekcor.juketify.net.JukeboxLibraryRequestPayload;
 import xyz.tekcor.juketify.net.JukeboxPreparePayload;
+import xyz.tekcor.juketify.net.JukeboxProgressPayload;
+import xyz.tekcor.juketify.net.JukeboxQueueAddPayload;
+import xyz.tekcor.juketify.net.JukeboxQueuePayload;
 import xyz.tekcor.juketify.net.JukeboxRadiusPayload;
 import xyz.tekcor.juketify.net.JukeboxReadyPayload;
 import xyz.tekcor.juketify.net.JukeboxSearchFailedPayload;
 import xyz.tekcor.juketify.net.JukeboxSearchOnlinePayload;
+import xyz.tekcor.juketify.net.JukeboxSkipPayload;
 import xyz.tekcor.juketify.net.JukeboxStatePayload;
 import xyz.tekcor.juketify.server.FileTransferServer;
+import xyz.tekcor.juketify.server.OggDuration;
 import xyz.tekcor.juketify.server.YtDlpService;
 
 public class Juketify implements ModInitializer {
@@ -67,23 +78,27 @@ public class Juketify implements ModInitializer {
 	private static final int RANGE_CHECK_INTERVAL_TICKS = 20;
 	private static final long MAX_TRACK_LIFETIME_MILLIS = 20L * 60L * 1000L;
 	private static final long PREPARE_TIMEOUT_MILLIS = 20L * 1000L;
+	private static final long TRACK_END_GRACE_MILLIS = 400L;
+	private static final int MAX_QUEUE_SIZE = 32;
 	private static final int FILE_CACHE_SIZE = 3;
 
 	private record JukeboxKey(ResourceKey<Level> level, BlockPos pos) {
 	}
 
-	private static final class Playing {
-		private final String fileName;
-		private final long startedAtMillis;
+	private static final class Jukebox {
+		private String nowPlaying;
+		private long startedAtMillis;
+		private long durationMillis;
+		private final Deque<String> queue = new ArrayDeque<>();
 		private final Set<UUID> heard = new HashSet<>();
-
-		private Playing(String fileName) {
-			this.fileName = fileName;
-			this.startedAtMillis = System.currentTimeMillis();
-		}
 
 		private long elapsedMillis() {
 			return System.currentTimeMillis() - this.startedAtMillis;
+		}
+
+		private boolean finished() {
+			return this.durationMillis > 0L
+					&& this.elapsedMillis() > this.durationMillis + TRACK_END_GRACE_MILLIS;
 		}
 	}
 
@@ -102,7 +117,7 @@ public class Juketify implements ModInitializer {
 		}
 	}
 
-	private static final Map<JukeboxKey, Playing> ACTIVE = new ConcurrentHashMap<>();
+	private static final Map<JukeboxKey, Jukebox> JUKEBOXES = new ConcurrentHashMap<>();
 	private static final Map<JukeboxKey, Pending> PENDING = new ConcurrentHashMap<>();
 
 	private static final Map<String, byte[]> FILE_CACHE =
@@ -119,37 +134,8 @@ public class Juketify implements ModInitializer {
 	public void onInitialize() {
 		LOGGER.info("Juketify initialising");
 
-		PayloadTypeRegistry.serverboundPlay().register(JukeboxCommandPayload.TYPE, JukeboxCommandPayload.CODEC);
-		PayloadTypeRegistry.serverboundPlay().register(JukeboxSearchOnlinePayload.TYPE, JukeboxSearchOnlinePayload.CODEC);
-		PayloadTypeRegistry.serverboundPlay().register(JukeboxFileRequestPayload.TYPE, JukeboxFileRequestPayload.CODEC);
-		PayloadTypeRegistry.serverboundPlay().register(JukeboxReadyPayload.TYPE, JukeboxReadyPayload.CODEC);
-		PayloadTypeRegistry.clientboundPlay().register(JukeboxStatePayload.TYPE, JukeboxStatePayload.CODEC);
-		PayloadTypeRegistry.clientboundPlay().register(JukeboxSearchFailedPayload.TYPE, JukeboxSearchFailedPayload.CODEC);
-		PayloadTypeRegistry.clientboundPlay().register(JukeboxFileStartPayload.TYPE, JukeboxFileStartPayload.CODEC);
-		PayloadTypeRegistry.clientboundPlay().register(JukeboxFileChunkPayload.TYPE, JukeboxFileChunkPayload.CODEC);
-		PayloadTypeRegistry.clientboundPlay().register(JukeboxPreparePayload.TYPE, JukeboxPreparePayload.CODEC);
-		PayloadTypeRegistry.clientboundPlay().register(JukeboxRadiusPayload.TYPE, JukeboxRadiusPayload.CODEC);
-
-		ServerPlayNetworking.registerGlobalReceiver(JukeboxCommandPayload.TYPE, (payload, context) -> {
-			ServerPlayer sender = context.player();
-
-			context.server().execute(() -> {
-				if (payload.isStop()) {
-					stopPlayback(sender, payload.pos());
-				} else {
-					beginPrepare(sender, payload.pos(), payload.fileName());
-				}
-			});
-		});
-
-		ServerPlayNetworking.registerGlobalReceiver(JukeboxSearchOnlinePayload.TYPE, (payload, context) ->
-				context.server().execute(() -> handleOnlineSearch(context.player(), payload)));
-
-		ServerPlayNetworking.registerGlobalReceiver(JukeboxFileRequestPayload.TYPE, (payload, context) ->
-				context.server().execute(() -> handleFileRequest(context.player(), payload)));
-
-		ServerPlayNetworking.registerGlobalReceiver(JukeboxReadyPayload.TYPE, (payload, context) ->
-				context.server().execute(() -> handleReady(context.player(), payload)));
+		registerPayloads();
+		registerReceivers();
 
 		JuketifyConfig.load();
 		HEARING_RANGE = JuketifyConfig.radius();
@@ -194,10 +180,92 @@ public class Juketify implements ModInitializer {
 				checkPending(server);
 			}
 
+			if (!JUKEBOXES.isEmpty()) {
+				checkFinished(server);
+			}
+
 			if (tickCounter % RANGE_CHECK_INTERVAL_TICKS == 0) {
 				updateListeners(server.getPlayerList().getPlayers());
 			}
 		});
+	}
+
+	private static void registerPayloads() {
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxCommandPayload.TYPE, JukeboxCommandPayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxSearchOnlinePayload.TYPE, JukeboxSearchOnlinePayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxFileRequestPayload.TYPE, JukeboxFileRequestPayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxReadyPayload.TYPE, JukeboxReadyPayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxLibraryRequestPayload.TYPE, JukeboxLibraryRequestPayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxQueueAddPayload.TYPE, JukeboxQueueAddPayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxSkipPayload.TYPE, JukeboxSkipPayload.CODEC);
+
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxStatePayload.TYPE, JukeboxStatePayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxSearchFailedPayload.TYPE, JukeboxSearchFailedPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxFileStartPayload.TYPE, JukeboxFileStartPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxFileChunkPayload.TYPE, JukeboxFileChunkPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxPreparePayload.TYPE, JukeboxPreparePayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxRadiusPayload.TYPE, JukeboxRadiusPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxLibraryPayload.TYPE, JukeboxLibraryPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxQueuePayload.TYPE, JukeboxQueuePayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxProgressPayload.TYPE, JukeboxProgressPayload.CODEC);
+	}
+
+	private static void registerReceivers() {
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxCommandPayload.TYPE, (payload, context) -> {
+			ServerPlayer sender = context.player();
+
+			context.server().execute(() -> {
+				if (!inRange(sender, payload.pos())) {
+					return;
+				}
+
+				if (payload.isStop()) {
+					stopPlayback(sender.level(), key(sender, payload.pos()));
+				} else {
+					playNow(sender.level(), key(sender, payload.pos()), payload.fileName());
+				}
+			});
+		});
+
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxSearchOnlinePayload.TYPE, (payload, context) ->
+				context.server().execute(() -> handleOnlineSearch(context.player(), payload)));
+
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxFileRequestPayload.TYPE, (payload, context) ->
+				context.server().execute(() -> handleFileRequest(context.player(), payload)));
+
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxReadyPayload.TYPE, (payload, context) ->
+				context.server().execute(() -> handleReady(context.player(), payload)));
+
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxLibraryRequestPayload.TYPE, (payload, context) ->
+				context.server().execute(() -> sendLibrary(context.player())));
+
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxQueueAddPayload.TYPE, (payload, context) -> {
+			ServerPlayer sender = context.player();
+
+			context.server().execute(() -> {
+				if (inRange(sender, payload.pos())) {
+					enqueueTrack(sender.level(), key(sender, payload.pos()), payload.fileName());
+				}
+			});
+		});
+
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxSkipPayload.TYPE, (payload, context) -> {
+			ServerPlayer sender = context.player();
+
+			context.server().execute(() -> {
+				if (inRange(sender, payload.pos())) {
+					advance(sender.level(), key(sender, payload.pos()));
+				}
+			});
+		});
+	}
+
+	private static JukeboxKey key(ServerPlayer player, BlockPos pos) {
+		return new JukeboxKey(player.level().dimension(), pos.immutable());
+	}
+
+	private static boolean inRange(ServerPlayer player, BlockPos pos) {
+		return player.blockPosition().closerThan(pos, HEARING_RANGE);
 	}
 
 	private static int setRadius(CommandSourceStack source, int blocks) {
@@ -220,13 +288,44 @@ public class Juketify implements ModInitializer {
 		return FabricLoader.getInstance().getGameDir().resolve("music");
 	}
 
+	private static void sendLibrary(ServerPlayer player) {
+		CompletableFuture.supplyAsync(() -> {
+			Path root = musicDir();
+			List<String> names = new ArrayList<>();
+
+			try {
+				Files.createDirectories(root);
+
+				try (Stream<Path> walk = Files.walk(root)) {
+					walk.filter(Files::isRegularFile)
+							.filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".ogg"))
+							.sorted()
+							.forEach(p -> names.add(p.getFileName().toString()));
+				}
+			} catch (IOException e) {
+				LOGGER.error("Could not list {}", root, e);
+			}
+
+			return names;
+		}, DISK_EXECUTOR).whenComplete((names, error) -> {
+			if (error != null || names == null) {
+				return;
+			}
+
+			player.level().getServer().execute(() ->
+					ServerPlayNetworking.send(player, new JukeboxLibraryPayload(names)));
+		});
+	}
+
 	private static void handleOnlineSearch(ServerPlayer sender, JukeboxSearchOnlinePayload payload) {
-		if (!sender.blockPosition().closerThan(payload.pos(), HEARING_RANGE)) {
+		if (!inRange(sender, payload.pos())) {
 			return;
 		}
 
 		MinecraftServer server = sender.level().getServer();
 		Path musicDir = musicDir();
+		JukeboxKey key = key(sender, payload.pos());
+		ServerLevel level = sender.level();
 
 		YtDlpService.searchBest(payload.query())
 				.thenCompose(result -> YtDlpService.ensureDownloaded(result, musicDir))
@@ -238,27 +337,66 @@ public class Juketify implements ModInitializer {
 						return;
 					}
 
-					beginPrepare(sender, payload.pos(), fileName);
+					enqueueTrack(level, key, fileName);
 				}));
 	}
 
-	private static void beginPrepare(ServerPlayer sender, BlockPos pos, String fileName) {
-		ServerLevel level = sender.level();
+	private static void enqueueTrack(ServerLevel level, JukeboxKey key, String fileName) {
+		Jukebox jukebox = JUKEBOXES.get(key);
 
-		if (!sender.blockPosition().closerThan(pos, HEARING_RANGE)) {
+		if (PENDING.containsKey(key)) {
+			if (jukebox != null && jukebox.queue.size() < MAX_QUEUE_SIZE) {
+				jukebox.queue.add(fileName);
+			}
+
 			return;
 		}
 
-		JukeboxKey key = new JukeboxKey(level.dimension(), pos.immutable());
+		if (jukebox == null || jukebox.nowPlaying == null) {
+			playNow(level, key, fileName);
+			return;
+		}
 
-		ACTIVE.remove(key);
+		if (jukebox.queue.size() >= MAX_QUEUE_SIZE) {
+			return;
+		}
+
+		jukebox.queue.add(fileName);
+		broadcastQueue(level, key, jukebox);
+	}
+
+	private static void playNow(ServerLevel level, JukeboxKey key, String fileName) {
+		beginPrepare(level, key, fileName);
+	}
+
+	private static void advance(ServerLevel level, JukeboxKey key) {
+		Jukebox jukebox = JUKEBOXES.get(key);
+
+		if (jukebox == null) {
+			return;
+		}
+
+		String next = jukebox.queue.poll();
+
+		if (next == null) {
+			stopPlayback(level, key);
+			return;
+		}
+
+		beginPrepare(level, key, next);
+	}
+
+	private static void beginPrepare(ServerLevel level, JukeboxKey key, String fileName) {
+		Jukebox jukebox = JUKEBOXES.computeIfAbsent(key, k -> new Jukebox());
+		jukebox.nowPlaying = null;
+		jukebox.heard.clear();
 
 		Pending pending = new Pending(fileName);
 		PENDING.put(key, pending);
 
-		JukeboxPreparePayload prepare = new JukeboxPreparePayload(pos, fileName);
+		JukeboxPreparePayload prepare = new JukeboxPreparePayload(key.pos(), fileName);
 
-		for (ServerPlayer player : PlayerLookup.around(level, pos, HEARING_RANGE)) {
+		for (ServerPlayer player : PlayerLookup.around(level, key.pos(), HEARING_RANGE)) {
 			if (!ServerPlayNetworking.canSend(player, JukeboxPreparePayload.TYPE)) {
 				continue;
 			}
@@ -274,7 +412,7 @@ public class Juketify implements ModInitializer {
 	}
 
 	private static void handleReady(ServerPlayer player, JukeboxReadyPayload payload) {
-		JukeboxKey key = new JukeboxKey(player.level().dimension(), payload.pos().immutable());
+		JukeboxKey key = key(player, payload.pos());
 		Pending pending = PENDING.get(key);
 
 		if (pending == null) {
@@ -295,19 +433,20 @@ public class Juketify implements ModInitializer {
 	}
 
 	private static void catchUp(ServerPlayer player, JukeboxKey key, JukeboxReadyPayload payload) {
-		Playing playing = ACTIVE.get(key);
+		Jukebox jukebox = JUKEBOXES.get(key);
 
-		if (playing == null || !playing.fileName.equals(payload.fileName()) || !payload.available()) {
+		if (jukebox == null || jukebox.nowPlaying == null
+				|| !jukebox.nowPlaying.equals(payload.fileName()) || !payload.available()) {
 			return;
 		}
 
-		if (!player.blockPosition().closerThan(key.pos(), HEARING_RANGE)) {
+		if (!inRange(player, key.pos())) {
 			return;
 		}
 
-		playing.heard.add(player.getUUID());
+		jukebox.heard.add(player.getUUID());
 		ServerPlayNetworking.send(player,
-				new JukeboxStatePayload(key.pos(), playing.fileName, playing.elapsedMillis()));
+				new JukeboxStatePayload(key.pos(), jukebox.nowPlaying, jukebox.elapsedMillis()));
 	}
 
 	private static void checkPending(MinecraftServer server) {
@@ -333,55 +472,107 @@ public class Juketify implements ModInitializer {
 		}
 	}
 
+	private static void checkFinished(MinecraftServer server) {
+		for (Map.Entry<JukeboxKey, Jukebox> entry : JUKEBOXES.entrySet()) {
+			Jukebox jukebox = entry.getValue();
+
+			if (jukebox.nowPlaying == null || !jukebox.finished()) {
+				continue;
+			}
+
+			JukeboxKey key = entry.getKey();
+			ServerLevel level = server.getLevel(key.level());
+
+			if (level != null) {
+				advance(level, key);
+			}
+		}
+	}
+
 	private static void startPlayback(ServerLevel level, JukeboxKey key, String fileName) {
-		Playing playing = new Playing(fileName);
-		ACTIVE.put(key, playing);
+		Jukebox jukebox = JUKEBOXES.computeIfAbsent(key, k -> new Jukebox());
+
+		jukebox.nowPlaying = fileName;
+		jukebox.startedAtMillis = System.currentTimeMillis();
+		jukebox.durationMillis = durationOf(fileName);
+		jukebox.heard.clear();
 
 		JukeboxStatePayload state = new JukeboxStatePayload(key.pos(), fileName, 0L);
 
 		for (ServerPlayer player : PlayerLookup.around(level, key.pos(), HEARING_RANGE)) {
-			playing.heard.add(player.getUUID());
+			jukebox.heard.add(player.getUUID());
 			ServerPlayNetworking.send(player, state);
+		}
+
+		broadcastQueue(level, key, jukebox);
+	}
+
+	private static long durationOf(String fileName) {
+		Path file = musicDir().resolve(fileName).normalize();
+
+		if (!file.startsWith(musicDir()) || !Files.isRegularFile(file)) {
+			return 0L;
+		}
+
+		return OggDuration.millis(file);
+	}
+
+	private static void broadcastQueue(ServerLevel level, JukeboxKey key, Jukebox jukebox) {
+		JukeboxQueuePayload payload = new JukeboxQueuePayload(
+				key.pos(),
+				jukebox.nowPlaying == null ? "" : jukebox.nowPlaying,
+				List.copyOf(jukebox.queue));
+
+		for (ServerPlayer player : PlayerLookup.around(level, key.pos(), HEARING_RANGE)) {
+			ServerPlayNetworking.send(player, payload);
 		}
 	}
 
-	private static void stopPlayback(ServerPlayer sender, BlockPos pos) {
-		ServerLevel level = sender.level();
-		JukeboxKey key = new JukeboxKey(level.dimension(), pos.immutable());
-
-		ACTIVE.remove(key);
+	private static void stopPlayback(ServerLevel level, JukeboxKey key) {
+		Jukebox jukebox = JUKEBOXES.remove(key);
 		PENDING.remove(key);
 
-		JukeboxStatePayload state = JukeboxStatePayload.stop(pos);
+		JukeboxStatePayload state = JukeboxStatePayload.stop(key.pos());
+		JukeboxQueuePayload queue = new JukeboxQueuePayload(key.pos(), "", List.of());
 
-		for (ServerPlayer player : PlayerLookup.around(level, pos, HEARING_RANGE)) {
+		for (ServerPlayer player : PlayerLookup.around(level, key.pos(), HEARING_RANGE)) {
 			ServerPlayNetworking.send(player, state);
+			ServerPlayNetworking.send(player, queue);
+		}
+
+		if (jukebox != null) {
+			jukebox.queue.clear();
 		}
 	}
 
 	private static void sendCurrentState(ServerPlayer player) {
 		ResourceKey<Level> dimension = player.level().dimension();
 
-		for (Map.Entry<JukeboxKey, Playing> entry : ACTIVE.entrySet()) {
+		for (Map.Entry<JukeboxKey, Jukebox> entry : JUKEBOXES.entrySet()) {
 			JukeboxKey key = entry.getKey();
+			Jukebox jukebox = entry.getValue();
 
-			if (!key.level().equals(dimension) || !player.blockPosition().closerThan(key.pos(), HEARING_RANGE)) {
+			if (!key.level().equals(dimension) || jukebox.nowPlaying == null
+					|| !inRange(player, key.pos())) {
 				continue;
 			}
 
-			Playing playing = entry.getValue();
-			playing.heard.add(player.getUUID());
+			jukebox.heard.add(player.getUUID());
 			ServerPlayNetworking.send(player,
-					new JukeboxStatePayload(key.pos(), playing.fileName, playing.elapsedMillis()));
+					new JukeboxStatePayload(key.pos(), jukebox.nowPlaying, jukebox.elapsedMillis()));
+			ServerPlayNetworking.send(player, new JukeboxQueuePayload(
+					key.pos(), jukebox.nowPlaying, List.copyOf(jukebox.queue)));
 		}
 	}
 
 	private static void updateListeners(Iterable<ServerPlayer> players) {
-		if (ACTIVE.isEmpty()) {
+		if (JUKEBOXES.isEmpty()) {
 			return;
 		}
 
-		ACTIVE.entrySet().removeIf(e -> e.getValue().elapsedMillis() > MAX_TRACK_LIFETIME_MILLIS);
+		JUKEBOXES.entrySet().removeIf(e -> e.getValue().nowPlaying != null
+				&& e.getValue().durationMillis <= 0L
+				&& e.getValue().elapsedMillis() > MAX_TRACK_LIFETIME_MILLIS);
 
 		Map<ResourceKey<Level>, List<ServerPlayer>> byDimension = new HashMap<>();
 
@@ -389,9 +580,14 @@ public class Juketify implements ModInitializer {
 			byDimension.computeIfAbsent(player.level().dimension(), k -> new ArrayList<>()).add(player);
 		}
 
-		for (Map.Entry<JukeboxKey, Playing> entry : ACTIVE.entrySet()) {
+		for (Map.Entry<JukeboxKey, Jukebox> entry : JUKEBOXES.entrySet()) {
 			JukeboxKey key = entry.getKey();
-			Playing playing = entry.getValue();
+			Jukebox jukebox = entry.getValue();
+
+			if (jukebox.nowPlaying == null) {
+				continue;
+			}
+
 			List<ServerPlayer> candidates = byDimension.get(key.level());
 
 			if (candidates == null) {
@@ -401,19 +597,21 @@ public class Juketify implements ModInitializer {
 			Set<UUID> inRange = new HashSet<>();
 
 			for (ServerPlayer player : candidates) {
-				if (!player.blockPosition().closerThan(key.pos(), HEARING_RANGE)) {
+				if (!inRange(player, key.pos())) {
 					continue;
 				}
 
 				inRange.add(player.getUUID());
 
-				if (playing.heard.add(player.getUUID())) {
+				if (jukebox.heard.add(player.getUUID())) {
 					ServerPlayNetworking.send(player,
-							new JukeboxStatePayload(key.pos(), playing.fileName, playing.elapsedMillis()));
+							new JukeboxStatePayload(key.pos(), jukebox.nowPlaying, jukebox.elapsedMillis()));
+					ServerPlayNetworking.send(player, new JukeboxQueuePayload(
+							key.pos(), jukebox.nowPlaying, List.copyOf(jukebox.queue)));
 				}
 			}
 
-			playing.heard.retainAll(inRange);
+			jukebox.heard.retainAll(inRange);
 		}
 	}
 
