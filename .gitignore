@@ -1,0 +1,33 @@
+# gradle
+.gradle/
+build/
+out/
+classes/
+
+# idea
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# eclipse / vscode
+.settings/
+.classpath
+.project
+bin/
+.vscode/
+
+# fabric loom
+run/
+remappedSrc/
+
+# macos
+.DS_Store
+
+# juketify local state — never commit these
+# config holds a Spotify refresh token; music/ and cache/ hold audio files
+config/juketify/
+music/
+cache/
+mapping.json
+.env

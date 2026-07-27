@@ -1,0 +1,32 @@
+{
+	"schemaVersion": 1,
+	"id": "juketify",
+	"version": "${version}",
+	"name": "Juketify",
+	"description": "a better jukebox. right click ur jukebox, enter the music you wanna listen to and it'll find it and play it for you from the jukebox.",
+	"authors": [
+		"maarrccoos"
+	],
+	"contact": {
+		"homepage": "https://github.com/maarrccoos/juketify",
+		"issues": "https://github.com/maarrccoos/juketify/issues",
+		"sources": "https://github.com/maarrccoos/juketify"
+	},
+	"license": "MIT",
+	"icon": "assets/juketify/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"xyz.tekcor.juketify.Juketify"
+		],
+		"client": [
+			"xyz.tekcor.juketify.client.JuketifyClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.1.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

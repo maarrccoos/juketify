@@ -1,0 +1,10 @@
+{
+	"stream": {
+		"sounds": [
+			{
+				"name": "juketify:silence",
+				"stream": true
+			}
+		]
+	}
+}

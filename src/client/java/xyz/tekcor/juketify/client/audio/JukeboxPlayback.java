@@ -1,0 +1,61 @@
+package xyz.tekcor.juketify.client.audio;
+
+import org.jetbrains.annotations.Nullable;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import xyz.tekcor.juketify.client.library.Track;
+
+public final class JukeboxPlayback {
+	@Nullable
+	private static JukeboxSoundInstance current;
+	@Nullable
+	private static Track currentTrack;
+	@Nullable
+	private static BlockPos currentPos;
+
+	private JukeboxPlayback() {
+	}
+
+	public static void play(Track track, BlockPos pos) {
+		play(track, pos, 0L);
+	}
+
+	public static void play(Track track, BlockPos pos, long startOffsetMillis) {
+		stop();
+
+		current = new JukeboxSoundInstance(track.path(), pos, startOffsetMillis);
+		currentTrack = track;
+		currentPos = pos.immutable();
+		Minecraft.getInstance().getSoundManager().play(current);
+	}
+
+	public static void stop() {
+		if (current != null) {
+			Minecraft.getInstance().getSoundManager().stop(current);
+			current = null;
+			currentTrack = null;
+			currentPos = null;
+		}
+	}
+
+	public static void stopIfAt(BlockPos pos) {
+		if (currentPos != null && currentPos.equals(pos)) {
+			stop();
+		}
+	}
+
+	@Nullable
+	public static BlockPos currentPos() {
+		return currentPos;
+	}
+
+	public static boolean isPlaying() {
+		return current != null;
+	}
+
+	@Nullable
+	public static Track currentTrack() {
+		return currentTrack;
+	}
+}
