@@ -1,5 +1,8 @@
 # juketify
 
+<img src="src/client/resources/assets/juketify/icon.png" width="128" alt="icon">
+
+
 a better jukebox. right click ur jukebox, enter the music you wanna listen to and it'll find it and play it for you from the jukebox. everyone nearby hears it too, with real distance falloff.
 
 if you don't already have the song it searches for it online, downloads it once, and it just plays for everyone in range after that.
@@ -65,4 +68,4 @@ what gets searched for and downloaded is entirely up to whoever's typing into th
 
 ## license
 
-MIT
+CC BY-NC-SA 4.0 - use it, modify it, put it in your modpack, just don't sell it or lock it behind a paywall, and keep it under the same license if you redistribute a modified version. full text in [LICENSE](LICENSE).

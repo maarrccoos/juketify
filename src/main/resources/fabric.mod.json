@@ -12,7 +12,7 @@
 		"issues": "https://github.com/maarrccoos/juketify/issues",
 		"sources": "https://github.com/maarrccoos/juketify"
 	},
-	"license": "MIT",
+	"license": "CC-BY-NC-SA-4.0",
 	"icon": "assets/juketify/icon.png",
 	"environment": "*",
 	"entrypoints": {
