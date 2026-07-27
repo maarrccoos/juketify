@@ -54,15 +54,14 @@ run a dev client:
 ./gradlew runClient
 ```
 
-## rough edges
+## disclaimer
 
-no queue, no skip. volume is whatever your jukebox slider is set to.
+online search works by calling out to these on whoever's hosting - this mod doesn't bundle or auto-install them, you need them on PATH yourself:
 
-online search just grabs yt-dlp's top result, no way to pick a different one. if it fails (no yt-dlp, no internet, no match) you get told, but there's no retry button, just search again.
+* [yt-dlp](https://github.com/yt-dlp/yt-dlp) ([Unlicense](https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE)): finds and downloads audio from whatever you search for.
+* [ffmpeg](https://ffmpeg.org/) ([LGPL/GPL](https://ffmpeg.org/legal.html)): converts what's downloaded into ogg vorbis.
 
-server trusts whatever a client asks it to play, give or take a range check. fine among friends, not hardened for a public server.
-
-a track that reaches its own end doesn't clear properly yet, still says it's playing when it's actually done.
+what gets searched for and downloaded is entirely up to whoever's typing into the jukebox. it's on you (and whoever's hosting) to comply with copyright law and the terms of service of whatever site yt-dlp pulls from. i'm not responsible for what people search for or how this gets used.
 
 ## license
 
