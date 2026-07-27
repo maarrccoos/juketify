@@ -50,8 +50,9 @@ public final class YtDlpService {
 		}, DOWNLOAD_EXECUTOR);
 	}
 
-	public static CompletableFuture<String> ensureDownloaded(String videoId, Path musicDir) {
-		String fileName = videoId + ".ogg";
+	public static CompletableFuture<String> ensureDownloaded(Result result, Path musicDir) {
+		String baseName = sanitizeFileName(result.title());
+		String fileName = baseName + ".ogg";
 		Path target = musicDir.resolve(fileName);
 
 		if (Files.exists(target)) {
@@ -67,11 +68,11 @@ public final class YtDlpService {
 
 			List<String> cmd = List.of(
 					YT_DLP,
-					"https://www.youtube.com/watch?v=" + videoId,
+					"https://www.youtube.com/watch?v=" + result.videoId(),
 					"-x", "--audio-format", "vorbis",
 					"--no-playlist",
 					"--no-warnings",
-					"-o", musicDir.resolve(videoId + ".%(ext)s").toString()
+					"-o", musicDir.resolve(baseName + ".%(ext)s").toString()
 			);
 
 			runAndReadLastLine(cmd, 120);
@@ -82,6 +83,17 @@ public final class YtDlpService {
 
 			return fileName;
 		}, DOWNLOAD_EXECUTOR);
+	}
+
+	private static String sanitizeFileName(String rawTitle) {
+		String cleaned = rawTitle.replaceAll("[\\\\/:*?\"<>|]", "").trim();
+		cleaned = cleaned.replaceAll("\\s+", " ");
+
+		if (cleaned.length() > 150) {
+			cleaned = cleaned.substring(0, 150).trim();
+		}
+
+		return cleaned.isEmpty() ? "track" : cleaned;
 	}
 
 	private static String runAndReadLastLine(List<String> cmd, int timeoutSeconds) {

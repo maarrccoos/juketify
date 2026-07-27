@@ -232,9 +232,8 @@ public class Juketify implements ModInitializer {
 		Path musicDir = musicDir();
 
 		YtDlpService.searchBest(payload.query())
-				.thenCompose(result -> YtDlpService.ensureDownloaded(result.videoId(), musicDir)
-						.thenApply(fileName -> result))
-				.whenComplete((result, error) -> server.execute(() -> {
+				.thenCompose(result -> YtDlpService.ensureDownloaded(result, musicDir))
+				.whenComplete((fileName, error) -> server.execute(() -> {
 					if (error != null) {
 						LOGGER.error("Juketify online search failed for \"{}\"", payload.query(), error);
 						ServerPlayNetworking.send(sender, new JukeboxSearchFailedPayload(
@@ -242,7 +241,7 @@ public class Juketify implements ModInitializer {
 						return;
 					}
 
-					relayState(sender, payload.pos(), result.videoId() + ".ogg");
+					relayState(sender, payload.pos(), fileName);
 				}));
 	}
 
