@@ -14,6 +14,9 @@ public final class JukeboxPlayback {
 	@Nullable
 	private static BlockPos currentPos;
 
+	private static long startOffsetMillis;
+	private static long startedAtMillis;
+
 	private JukeboxPlayback() {
 	}
 
@@ -27,6 +30,9 @@ public final class JukeboxPlayback {
 		current = new JukeboxSoundInstance(track.path(), pos, startOffsetMillis);
 		currentTrack = track;
 		currentPos = pos.immutable();
+		JukeboxPlayback.startOffsetMillis = Math.max(0L, startOffsetMillis);
+		startedAtMillis = System.currentTimeMillis();
+
 		Minecraft.getInstance().getSoundManager().play(current);
 	}
 
@@ -43,6 +49,21 @@ public final class JukeboxPlayback {
 		if (currentPos != null && currentPos.equals(pos)) {
 			stop();
 		}
+	}
+
+	public static void refreshRange() {
+		if (current == null || currentTrack == null || currentPos == null) {
+			return;
+		}
+
+		Track track = currentTrack;
+		BlockPos pos = currentPos;
+
+		play(track, pos, currentOffsetMillis());
+	}
+
+	private static long currentOffsetMillis() {
+		return startOffsetMillis + (System.currentTimeMillis() - startedAtMillis);
 	}
 
 	@Nullable

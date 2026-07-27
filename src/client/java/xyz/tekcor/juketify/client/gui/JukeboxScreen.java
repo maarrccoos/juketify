@@ -123,8 +123,8 @@ public class JukeboxScreen extends Screen {
 
 		ClientPlayNetworking.send(new JukeboxCommandPayload(this.jukeboxPos, best.fileName()));
 
-		this.status = Component.literal("Now playing: " + best.label());
-		this.statusColor = TEXT_OK;
+		this.status = Component.literal("Getting everyone ready: " + best.label());
+		this.statusColor = TEXT_DIM;
 	}
 
 	@Override

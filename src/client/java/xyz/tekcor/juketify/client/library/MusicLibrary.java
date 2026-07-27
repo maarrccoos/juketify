@@ -84,6 +84,22 @@ public final class MusicLibrary {
 		keys.add(normalize(track.artist() + " " + track.title() + " " + track.fileName()));
 	}
 
+	public synchronized void addFile(Path path) {
+		if (!hasSupportedExtension(path)) {
+			return;
+		}
+
+		String fileName = path.getFileName().toString();
+
+		for (Track existing : tracks) {
+			if (existing.fileName().equals(fileName)) {
+				return;
+			}
+		}
+
+		index(path);
+	}
+
 	private static Track read(Path path) {
 		String name = stripExtension(path.getFileName().toString()).trim();
 

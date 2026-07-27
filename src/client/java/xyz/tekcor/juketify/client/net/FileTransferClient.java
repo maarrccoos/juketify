@@ -31,6 +31,11 @@ public final class FileTransferClient {
 		}
 
 		int offset = index * JukeboxFileChunkPayload.CHUNK_SIZE;
+
+		if (offset < 0 || offset + data.length > transfer.buffer.length) {
+			return;
+		}
+
 		System.arraycopy(data, 0, transfer.buffer, offset, data.length);
 		transfer.received++;
 
@@ -40,20 +45,30 @@ public final class FileTransferClient {
 
 		ACTIVE.remove(fileName);
 
-		if (save(fileName, transfer.buffer)) {
+		Path saved = save(fileName, transfer.buffer);
+
+		if (saved != null) {
+			MusicLibrary.get().addFile(saved);
 			onComplete.accept(transfer.pos);
 		}
 	}
 
-	private static boolean save(String fileName, byte[] bytes) {
+	public static boolean isDownloading(String fileName) {
+		return ACTIVE.containsKey(fileName);
+	}
+
+	private static Path save(String fileName, byte[] bytes) {
 		try {
 			Path musicDir = MusicLibrary.musicDir();
 			Files.createDirectories(musicDir);
-			Files.write(musicDir.resolve(fileName), bytes);
-			return true;
+
+			Path target = musicDir.resolve(fileName);
+			Files.write(target, bytes);
+
+			return target;
 		} catch (IOException e) {
 			Juketify.LOGGER.error("Failed to save downloaded track {}", fileName, e);
-			return false;
+			return null;
 		}
 	}
 

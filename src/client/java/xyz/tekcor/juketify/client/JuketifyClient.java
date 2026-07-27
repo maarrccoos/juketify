@@ -23,7 +23,9 @@ import xyz.tekcor.juketify.net.JukeboxCommandPayload;
 import xyz.tekcor.juketify.net.JukeboxFileChunkPayload;
 import xyz.tekcor.juketify.net.JukeboxFileRequestPayload;
 import xyz.tekcor.juketify.net.JukeboxFileStartPayload;
+import xyz.tekcor.juketify.net.JukeboxPreparePayload;
 import xyz.tekcor.juketify.net.JukeboxRadiusPayload;
+import xyz.tekcor.juketify.net.JukeboxReadyPayload;
 import xyz.tekcor.juketify.net.JukeboxSearchFailedPayload;
 import xyz.tekcor.juketify.net.JukeboxStatePayload;
 
@@ -70,8 +72,14 @@ public class JuketifyClient implements ClientModInitializer {
 		ClientPlayNetworking.registerGlobalReceiver(JukeboxStatePayload.TYPE, (payload, context) ->
 				context.client().execute(() -> handleState(payload, context.client())));
 
+		ClientPlayNetworking.registerGlobalReceiver(JukeboxPreparePayload.TYPE, (payload, context) ->
+				context.client().execute(() -> handlePrepare(payload, context.client())));
+
 		ClientPlayNetworking.registerGlobalReceiver(JukeboxRadiusPayload.TYPE, (payload, context) ->
-				context.client().execute(() -> ClientRadius.set(payload.radius())));
+				context.client().execute(() -> {
+					ClientRadius.set(payload.radius());
+					JukeboxPlayback.refreshRange();
+				}));
 
 		ClientPlayNetworking.registerGlobalReceiver(JukeboxSearchFailedPayload.TYPE, (payload, context) ->
 				context.client().execute(() -> {
@@ -90,12 +98,30 @@ public class JuketifyClient implements ClientModInitializer {
 
 		ClientPlayNetworking.registerGlobalReceiver(JukeboxFileChunkPayload.TYPE, (payload, context) ->
 				context.client().execute(() -> FileTransferClient.chunk(
-						payload.fileName(), payload.index(), payload.data(), pos -> onTrackReady(payload.fileName(), pos))));
+						payload.fileName(), payload.index(), payload.data(),
+						pos -> ClientPlayNetworking.send(new JukeboxReadyPayload(pos, payload.fileName(), true)))));
 	}
 
-	private static void onTrackReady(String fileName, BlockPos pos) {
-		MusicLibrary.get().rescan();
-		MusicLibrary.get().byFileName(fileName).ifPresent(track -> JukeboxPlayback.play(track, pos));
+	private static void handlePrepare(JukeboxPreparePayload payload, Minecraft client) {
+		JukeboxPlayback.stopIfAt(payload.pos());
+
+		if (MusicLibrary.get().byFileName(payload.fileName()).isPresent()) {
+			ClientPlayNetworking.send(new JukeboxReadyPayload(payload.pos(), payload.fileName(), true));
+			return;
+		}
+
+		if (FileTransferClient.isDownloading(payload.fileName())) {
+			return;
+		}
+
+		if (client.gui != null) {
+			client.gui.setOverlayMessage(
+					Component.literal("Juketify: downloading \"" + payload.fileName() + "\"...")
+							.withStyle(ChatFormatting.YELLOW),
+					false);
+		}
+
+		ClientPlayNetworking.send(new JukeboxFileRequestPayload(payload.pos(), payload.fileName()));
 	}
 
 	private static void handleState(JukeboxStatePayload payload, Minecraft client) {
@@ -111,11 +137,8 @@ public class JuketifyClient implements ClientModInitializer {
 			return;
 		}
 
-		if (client.gui != null) {
-			client.gui.setOverlayMessage(
-					Component.literal("Juketify: downloading \"" + payload.fileName() + "\"...")
-							.withStyle(ChatFormatting.YELLOW),
-					false);
+		if (FileTransferClient.isDownloading(payload.fileName())) {
+			return;
 		}
 
 		ClientPlayNetworking.send(new JukeboxFileRequestPayload(payload.pos(), payload.fileName()));

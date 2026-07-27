@@ -3,19 +3,39 @@ package xyz.tekcor.juketify.server;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
+
+import xyz.tekcor.juketify.Juketify;
 
 public final class YtDlpService {
 
 	private static final String YT_DLP = "yt-dlp";
+
+	private static final int MIN_DURATION_SECONDS = 20;
+	private static final int MAX_DURATION_SECONDS = 15 * 60;
+	private static final double MIN_SCORE = 0.5D;
+
+	private static final Pattern NON_ALNUM = Pattern.compile("[^a-z0-9]+");
+	private static final Pattern DIACRITICS = Pattern.compile("\\p{M}+");
+
+	private static final List<String> JUNK_MARKERS = List.of(
+			"instrumental", "karaoke", "cover", "remix", "sped up", "slowed",
+			"reverb", "nightcore", "8d audio", "loop", "1 hour", "lyrics");
 
 	private static final Executor DOWNLOAD_EXECUTOR = Executors.newFixedThreadPool(2, r -> {
 		Thread thread = new Thread(r, "juketify-ytdlp");
@@ -26,32 +46,182 @@ public final class YtDlpService {
 	private YtDlpService() {
 	}
 
-	public record Result(String videoId, String title) {
+	public record Result(String videoId, String title, String artist) {
+
+		public String label() {
+			return this.artist.isEmpty() ? this.title : this.artist + " - " + this.title;
+		}
+	}
+
+	private record Candidate(String videoId, String title, String artist, int durationSeconds) {
 	}
 
 	public static CompletableFuture<Result> searchBest(String query) {
 		return CompletableFuture.supplyAsync(() -> {
-			List<String> cmd = List.of(
-					YT_DLP,
-					"ytsearch1:" + query,
-					"--skip-download",
-					"--no-playlist",
-					"--no-warnings",
-					"--print", "%(id)s\t%(title)s"
-			);
+			List<Candidate> candidates = searchYouTubeMusic(query);
 
-			String line = runAndReadLastLine(cmd, 30);
-			int tab = line.indexOf('\t');
-			if (tab < 0) {
-				throw new IllegalStateException("Unexpected yt-dlp output: " + line);
+			if (candidates.isEmpty()) {
+				candidates = searchYouTube(query);
 			}
 
-			return new Result(line.substring(0, tab), line.substring(tab + 1));
+			Result best = pickBest(query, candidates);
+
+			if (best == null) {
+				throw new IllegalStateException("No good match for \"" + query + "\"");
+			}
+
+			return best;
 		}, DOWNLOAD_EXECUTOR);
 	}
 
+	private static List<Candidate> searchYouTubeMusic(String query) {
+		String url = "https://music.youtube.com/search?q=" + URLEncoder.encode(query, StandardCharsets.UTF_8);
+
+		List<String> cmd = List.of(
+				YT_DLP,
+				url,
+				"--skip-download",
+				"--no-warnings",
+				"--playlist-items", "1-5",
+				"--print", "%(id)s\t%(title)s\t%(duration)s\t%(artist)s");
+
+		return parseCandidates(runLines(cmd, 45));
+	}
+
+	private static List<Candidate> searchYouTube(String query) {
+		List<String> cmd = List.of(
+				YT_DLP,
+				"ytsearch5:" + query,
+				"--skip-download",
+				"--no-playlist",
+				"--no-warnings",
+				"--print", "%(id)s\t%(title)s\t%(duration)s\t%(channel)s");
+
+		return parseCandidates(runLines(cmd, 45));
+	}
+
+	private static List<Candidate> parseCandidates(List<String> lines) {
+		List<Candidate> candidates = new ArrayList<>();
+
+		for (String line : lines) {
+			String[] parts = line.split("\t", -1);
+
+			if (parts.length < 4) {
+				continue;
+			}
+
+			String videoId = parts[0].trim();
+
+			if (videoId.length() != 11) {
+				continue;
+			}
+
+			int duration;
+			try {
+				duration = (int) Double.parseDouble(parts[2].trim());
+			} catch (NumberFormatException e) {
+				continue;
+			}
+
+			if (duration < MIN_DURATION_SECONDS || duration > MAX_DURATION_SECONDS) {
+				continue;
+			}
+
+			String artist = parts[3].trim();
+
+			if (artist.equals("NA")) {
+				artist = "";
+			}
+
+			candidates.add(new Candidate(videoId, parts[1].trim(), artist, duration));
+		}
+
+		return candidates;
+	}
+
+	private static Result pickBest(String query, List<Candidate> candidates) {
+		String normalisedQuery = normalise(query);
+		Set<String> queryTokens = tokens(normalisedQuery);
+
+		if (queryTokens.isEmpty()) {
+			return null;
+		}
+
+		Candidate best = null;
+		double bestScore = 0.0D;
+
+		for (Candidate candidate : candidates) {
+			double score = score(normalisedQuery, queryTokens, candidate);
+
+			if (score > bestScore) {
+				bestScore = score;
+				best = candidate;
+			}
+		}
+
+		if (best == null || bestScore < MIN_SCORE) {
+			return null;
+		}
+
+		return new Result(best.videoId(), best.title(), best.artist());
+	}
+
+	private static double score(String normalisedQuery, Set<String> queryTokens, Candidate candidate) {
+		String haystack = normalise(candidate.artist() + " " + candidate.title());
+		Set<String> haystackTokens = tokens(haystack);
+
+		int matched = 0;
+
+		for (String token : queryTokens) {
+			if (haystackTokens.contains(token)) {
+				matched++;
+			}
+		}
+
+		double score = matched / (double) queryTokens.size();
+
+		if (haystack.contains(normalisedQuery)) {
+			score += 0.25D;
+		}
+
+		if (!candidate.artist().isEmpty()) {
+			score += 0.1D;
+		}
+
+		String rawTitle = candidate.title().toLowerCase(Locale.ROOT);
+
+		for (String marker : JUNK_MARKERS) {
+			if (rawTitle.contains(marker) && !normalisedQuery.contains(normalise(marker))) {
+				score -= 0.35D;
+				break;
+			}
+		}
+
+		return score;
+	}
+
+	private static Set<String> tokens(String normalised) {
+		Set<String> result = new LinkedHashSet<>();
+
+		for (String token : normalised.split(" ")) {
+			if (!token.isBlank()) {
+				result.add(token);
+			}
+		}
+
+		return result;
+	}
+
+	private static String normalise(String raw) {
+		String s = raw.toLowerCase(Locale.ROOT);
+		s = Normalizer.normalize(s, Normalizer.Form.NFD);
+		s = DIACRITICS.matcher(s).replaceAll("");
+		s = NON_ALNUM.matcher(s).replaceAll(" ");
+		return s.trim().replaceAll("\\s+", " ");
+	}
+
 	public static CompletableFuture<String> ensureDownloaded(Result result, Path musicDir) {
-		String baseName = sanitizeFileName(result.title());
+		String baseName = sanitizeFileName(result.label());
 		String fileName = baseName + ".ogg";
 		Path target = musicDir.resolve(fileName);
 
@@ -72,10 +242,9 @@ public final class YtDlpService {
 					"-x", "--audio-format", "vorbis",
 					"--no-playlist",
 					"--no-warnings",
-					"-o", musicDir.resolve(baseName + ".%(ext)s").toString()
-			);
+					"-o", musicDir.resolve(baseName + ".%(ext)s").toString());
 
-			runAndReadLastLine(cmd, 120);
+			runLines(cmd, 180);
 
 			if (!Files.exists(target)) {
 				throw new IllegalStateException("yt-dlp finished but " + target + " is missing");
@@ -96,7 +265,7 @@ public final class YtDlpService {
 		return cleaned.isEmpty() ? "track" : cleaned;
 	}
 
-	private static String runAndReadLastLine(List<String> cmd, int timeoutSeconds) {
+	private static List<String> runLines(List<String> cmd, int timeoutSeconds) {
 		try {
 			ProcessBuilder pb = new ProcessBuilder(cmd);
 			pb.redirectErrorStream(true);
@@ -114,18 +283,18 @@ public final class YtDlpService {
 			}
 
 			boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+
 			if (!finished) {
 				process.destroyForcibly();
 				throw new IllegalStateException("yt-dlp timed out: " + cmd);
 			}
+
 			if (process.exitValue() != 0) {
-				throw new IllegalStateException("yt-dlp failed: " + String.join(" | ", lines));
-			}
-			if (lines.isEmpty()) {
-				throw new IllegalStateException("yt-dlp produced no output: " + cmd);
+				Juketify.LOGGER.warn("yt-dlp exited {}: {}", process.exitValue(), String.join(" | ", lines));
+				return List.of();
 			}
 
-			return lines.get(lines.size() - 1);
+			return lines;
 		} catch (IOException e) {
 			throw new IllegalStateException("Failed to run yt-dlp: " + cmd, e);
 		} catch (InterruptedException e) {
