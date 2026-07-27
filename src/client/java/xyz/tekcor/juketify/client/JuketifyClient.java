@@ -3,6 +3,8 @@ package xyz.tekcor.juketify.client;
 import java.util.Optional;
 
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.event.client.player.ClientPlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
@@ -19,6 +21,7 @@ import xyz.tekcor.juketify.client.gui.JukeboxScreen;
 import xyz.tekcor.juketify.client.library.MusicLibrary;
 import xyz.tekcor.juketify.client.library.Track;
 import xyz.tekcor.juketify.client.net.FileTransferClient;
+import xyz.tekcor.juketify.client.net.FileUploadClient;
 import xyz.tekcor.juketify.net.JukeboxCommandPayload;
 import xyz.tekcor.juketify.net.JukeboxFileChunkPayload;
 import xyz.tekcor.juketify.net.JukeboxFileRequestPayload;
@@ -31,6 +34,7 @@ import xyz.tekcor.juketify.net.JukeboxRadiusPayload;
 import xyz.tekcor.juketify.net.JukeboxReadyPayload;
 import xyz.tekcor.juketify.net.JukeboxSearchFailedPayload;
 import xyz.tekcor.juketify.net.JukeboxStatePayload;
+import xyz.tekcor.juketify.net.JukeboxUploadRequestPayload;
 
 public class JuketifyClient implements ClientModInitializer {
 	@Override
@@ -43,6 +47,11 @@ public class JuketifyClient implements ClientModInitializer {
 		registerStateReceiver();
 		registerFileTransferReceivers();
 
+		ClientTickEvents.END_CLIENT_TICK.register(client -> FileUploadClient.tick());
+
+		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> resetClientState());
+		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> resetClientState());
+
 		ClientPlayerBlockBreakEvents.AFTER.register((level, player, pos, state) -> {
 			if (state.is(Blocks.JUKEBOX)) {
 				ClientPlayNetworking.send(JukeboxCommandPayload.stop(pos));
@@ -50,6 +59,13 @@ public class JuketifyClient implements ClientModInitializer {
 
 			JukeboxPlayback.stopIfAt(pos);
 		});
+	}
+
+	private static void resetClientState() {
+		JukeboxPlayback.stop();
+		FileTransferClient.reset();
+		FileUploadClient.reset();
+		ClientJukebox.reset();
 	}
 
 	private static void registerJukeboxInteraction() {
@@ -115,6 +131,9 @@ public class JuketifyClient implements ClientModInitializer {
 	}
 
 	private static void registerFileTransferReceivers() {
+		ClientPlayNetworking.registerGlobalReceiver(JukeboxUploadRequestPayload.TYPE, (payload, context) ->
+				context.client().execute(() -> handleUploadRequest(payload, context.client())));
+
 		ClientPlayNetworking.registerGlobalReceiver(JukeboxFileStartPayload.TYPE, (payload, context) ->
 				context.client().execute(() -> FileTransferClient.begin(
 						payload.fileName(), payload.pos(), payload.fileSize(), payload.totalChunks())));
@@ -123,6 +142,23 @@ public class JuketifyClient implements ClientModInitializer {
 				context.client().execute(() -> FileTransferClient.chunk(
 						payload.fileName(), payload.index(), payload.data(),
 						pos -> ClientPlayNetworking.send(new JukeboxReadyPayload(pos, payload.fileName(), true)))));
+	}
+
+	private static void handleUploadRequest(JukeboxUploadRequestPayload payload, Minecraft client) {
+		Optional<Track> track = MusicLibrary.get().byFileName(payload.fileName());
+
+		if (track.isEmpty()) {
+			return;
+		}
+
+		if (client.gui != null) {
+			client.gui.setOverlayMessage(
+					Component.literal("Juketify: sharing " + track.get().label() + " with the server")
+							.withStyle(ChatFormatting.YELLOW),
+					false);
+		}
+
+		FileUploadClient.offer(payload.pos(), payload.fileName(), track.get().path());
 	}
 
 	private static void handlePrepare(JukeboxPreparePayload payload, Minecraft client) {

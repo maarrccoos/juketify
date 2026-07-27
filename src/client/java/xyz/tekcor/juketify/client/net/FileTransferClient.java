@@ -9,6 +9,7 @@ import java.util.function.Consumer;
 
 import net.minecraft.core.BlockPos;
 import xyz.tekcor.juketify.Juketify;
+import xyz.tekcor.juketify.client.ClientJukebox;
 import xyz.tekcor.juketify.client.library.MusicLibrary;
 import xyz.tekcor.juketify.net.JukeboxFileChunkPayload;
 
@@ -49,12 +50,17 @@ public final class FileTransferClient {
 
 		if (saved != null) {
 			MusicLibrary.get().addFile(saved);
+			ClientJukebox.bumpVersion();
 			onComplete.accept(transfer.pos);
 		}
 	}
 
 	public static boolean isDownloading(String fileName) {
 		return ACTIVE.containsKey(fileName);
+	}
+
+	public static void reset() {
+		ACTIVE.clear();
 	}
 
 	private static Path save(String fileName, byte[] bytes) {

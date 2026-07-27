@@ -2,6 +2,8 @@ package xyz.tekcor.juketify.client.gui;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 import com.mojang.blaze3d.platform.InputConstants;
 
@@ -47,6 +49,7 @@ public class JukeboxScreen extends Screen {
 	private int statusColor = TEXT_DIM;
 	private final List<String> shown = new ArrayList<>();
 	private int scroll;
+	private int seenVersion = -1;
 
 	public JukeboxScreen(BlockPos jukeboxPos) {
 		super(Component.literal("Juketify"));
@@ -86,15 +89,16 @@ public class JukeboxScreen extends Screen {
 	}
 
 	private void refreshList() {
+		this.seenVersion = ClientJukebox.version();
 		this.shown.clear();
 
 		String query = this.search == null ? "" : this.search.getValue().trim();
-		List<String> source = new ArrayList<>(ClientJukebox.library());
 
-		if (source.isEmpty()) {
-			for (Track track : MusicLibrary.get().tracks()) {
-				source.add(track.fileName());
-			}
+		Set<String> source = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+		source.addAll(ClientJukebox.library());
+
+		for (Track track : MusicLibrary.get().tracks()) {
+			source.add(track.fileName());
 		}
 
 		for (String fileName : source) {
@@ -208,6 +212,10 @@ public class JukeboxScreen extends Screen {
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
 		int centreX = this.width / 2;
+
+		if (this.seenVersion != ClientJukebox.version()) {
+			refreshList();
+		}
 
 		graphics.fill(centreX - PANEL_HALF_WIDTH, 20, centreX + PANEL_HALF_WIDTH, 212, PANEL_BG);
 		graphics.outline(centreX - PANEL_HALF_WIDTH, 20, PANEL_HALF_WIDTH * 2, 192, PANEL_BORDER);

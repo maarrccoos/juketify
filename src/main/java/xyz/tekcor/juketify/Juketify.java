@@ -59,7 +59,11 @@ import xyz.tekcor.juketify.net.JukeboxSearchFailedPayload;
 import xyz.tekcor.juketify.net.JukeboxSearchOnlinePayload;
 import xyz.tekcor.juketify.net.JukeboxSkipPayload;
 import xyz.tekcor.juketify.net.JukeboxStatePayload;
+import xyz.tekcor.juketify.net.JukeboxUploadChunkPayload;
+import xyz.tekcor.juketify.net.JukeboxUploadRequestPayload;
+import xyz.tekcor.juketify.net.JukeboxUploadStartPayload;
 import xyz.tekcor.juketify.server.FileTransferServer;
+import xyz.tekcor.juketify.server.FileUploadServer;
 import xyz.tekcor.juketify.server.OggDuration;
 import xyz.tekcor.juketify.server.YtDlpService;
 
@@ -165,9 +169,14 @@ public class Juketify implements ModInitializer {
 				server.execute(() -> {
 					UUID id = handler.getPlayer().getUUID();
 					FileTransferServer.cancelFor(id);
+					FileUploadServer.cancelFor(id);
 
 					for (Pending pending : PENDING.values()) {
 						pending.waitingOn.remove(id);
+					}
+
+					for (Jukebox jukebox : JUKEBOXES.values()) {
+						jukebox.heard.remove(id);
 					}
 				}));
 
@@ -198,6 +207,8 @@ public class Juketify implements ModInitializer {
 		PayloadTypeRegistry.serverboundPlay().register(JukeboxLibraryRequestPayload.TYPE, JukeboxLibraryRequestPayload.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(JukeboxQueueAddPayload.TYPE, JukeboxQueueAddPayload.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(JukeboxSkipPayload.TYPE, JukeboxSkipPayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxUploadStartPayload.TYPE, JukeboxUploadStartPayload.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(JukeboxUploadChunkPayload.TYPE, JukeboxUploadChunkPayload.CODEC);
 
 		PayloadTypeRegistry.clientboundPlay().register(JukeboxStatePayload.TYPE, JukeboxStatePayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(JukeboxSearchFailedPayload.TYPE, JukeboxSearchFailedPayload.CODEC);
@@ -208,6 +219,7 @@ public class Juketify implements ModInitializer {
 		PayloadTypeRegistry.clientboundPlay().register(JukeboxLibraryPayload.TYPE, JukeboxLibraryPayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(JukeboxQueuePayload.TYPE, JukeboxQueuePayload.CODEC);
 		PayloadTypeRegistry.clientboundPlay().register(JukeboxProgressPayload.TYPE, JukeboxProgressPayload.CODEC);
+		PayloadTypeRegistry.clientboundPlay().register(JukeboxUploadRequestPayload.TYPE, JukeboxUploadRequestPayload.CODEC);
 	}
 
 	private static void registerReceivers() {
@@ -222,7 +234,7 @@ public class Juketify implements ModInitializer {
 				if (payload.isStop()) {
 					stopPlayback(sender.level(), key(sender, payload.pos()));
 				} else {
-					playNow(sender.level(), key(sender, payload.pos()), payload.fileName());
+					enqueueTrack(sender.level(), key(sender, payload.pos()), payload.fileName(), sender);
 				}
 			});
 		});
@@ -244,9 +256,30 @@ public class Juketify implements ModInitializer {
 
 			context.server().execute(() -> {
 				if (inRange(sender, payload.pos())) {
-					enqueueTrack(sender.level(), key(sender, payload.pos()), payload.fileName());
+					enqueueTrack(sender.level(), key(sender, payload.pos()), payload.fileName(), sender);
 				}
 			});
+		});
+
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxUploadStartPayload.TYPE, (payload, context) -> {
+			ServerPlayer sender = context.player();
+
+			context.server().execute(() -> FileUploadServer.begin(
+					sender, payload.pos(), payload.fileName(), payload.fileSize(), payload.totalChunks()));
+		});
+
+		ServerPlayNetworking.registerGlobalReceiver(JukeboxUploadChunkPayload.TYPE, (payload, context) -> {
+			ServerPlayer sender = context.player();
+
+			context.server().execute(() -> FileUploadServer.chunk(
+					sender, musicDir(), payload.fileName(), payload.index(), payload.data(),
+					(pos, fileName) -> {
+						synchronized (FILE_CACHE) {
+							FILE_CACHE.remove(fileName);
+						}
+
+						enqueueTrack(sender.level(), key(sender, pos), fileName, null);
+					}));
 		});
 
 		ServerPlayNetworking.registerGlobalReceiver(JukeboxSkipPayload.TYPE, (payload, context) -> {
@@ -337,11 +370,25 @@ public class Juketify implements ModInitializer {
 						return;
 					}
 
-					enqueueTrack(level, key, fileName);
+					enqueueTrack(level, key, fileName, null);
 				}));
 	}
 
-	private static void enqueueTrack(ServerLevel level, JukeboxKey key, String fileName) {
+	private static boolean serverHasFile(String fileName) {
+		if (!FileUploadServer.isValidName(fileName)) {
+			return false;
+		}
+
+		Path file = musicDir().resolve(fileName).normalize();
+		return file.startsWith(musicDir()) && Files.isRegularFile(file);
+	}
+
+	private static void enqueueTrack(ServerLevel level, JukeboxKey key, String fileName, ServerPlayer origin) {
+		if (!serverHasFile(fileName)) {
+			requestUpload(key, fileName, origin);
+			return;
+		}
+
 		Jukebox jukebox = JUKEBOXES.get(key);
 
 		if (PENDING.containsKey(key)) {
@@ -353,7 +400,7 @@ public class Juketify implements ModInitializer {
 		}
 
 		if (jukebox == null || jukebox.nowPlaying == null) {
-			playNow(level, key, fileName);
+			beginPrepare(level, key, fileName);
 			return;
 		}
 
@@ -365,8 +412,13 @@ public class Juketify implements ModInitializer {
 		broadcastQueue(level, key, jukebox);
 	}
 
-	private static void playNow(ServerLevel level, JukeboxKey key, String fileName) {
-		beginPrepare(level, key, fileName);
+	private static void requestUpload(JukeboxKey key, String fileName, ServerPlayer origin) {
+		if (origin == null || !ServerPlayNetworking.canSend(origin, JukeboxUploadRequestPayload.TYPE)) {
+			return;
+		}
+
+		LOGGER.info("Asking {} to share {}", origin.getGameProfile().name(), fileName);
+		ServerPlayNetworking.send(origin, new JukeboxUploadRequestPayload(key.pos(), fileName));
 	}
 
 	private static void advance(ServerLevel level, JukeboxKey key) {
@@ -376,7 +428,11 @@ public class Juketify implements ModInitializer {
 			return;
 		}
 
-		String next = jukebox.queue.poll();
+		String next;
+
+		while ((next = jukebox.queue.poll()) != null && !serverHasFile(next)) {
+			LOGGER.warn("Skipping {}, the server no longer has it", next);
+		}
 
 		if (next == null) {
 			stopPlayback(level, key);
@@ -557,7 +613,10 @@ public class Juketify implements ModInitializer {
 				continue;
 			}
 
-			jukebox.heard.add(player.getUUID());
+			if (!jukebox.heard.add(player.getUUID())) {
+				continue;
+			}
+
 			ServerPlayNetworking.send(player,
 					new JukeboxStatePayload(key.pos(), jukebox.nowPlaying, jukebox.elapsedMillis()));
 			ServerPlayNetworking.send(player, new JukeboxQueuePayload(

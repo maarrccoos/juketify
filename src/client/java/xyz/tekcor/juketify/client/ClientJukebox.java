@@ -11,13 +11,32 @@ public final class ClientJukebox {
 	private static String nowPlaying = "";
 	private static String downloading = "";
 	private static int downloadPercent;
+	private static int version;
 
 	private ClientJukebox() {
+	}
+
+	public static synchronized int version() {
+		return version;
+	}
+
+	public static synchronized void bumpVersion() {
+		version++;
+	}
+
+	public static synchronized void reset() {
+		LIBRARY.clear();
+		QUEUE.clear();
+		nowPlaying = "";
+		downloading = "";
+		downloadPercent = 0;
+		version++;
 	}
 
 	public static synchronized void setLibrary(List<String> fileNames) {
 		LIBRARY.clear();
 		LIBRARY.addAll(fileNames);
+		version++;
 	}
 
 	public static synchronized List<String> library() {

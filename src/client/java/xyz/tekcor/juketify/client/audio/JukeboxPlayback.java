@@ -4,6 +4,7 @@ import org.jetbrains.annotations.Nullable;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.sounds.SoundSource;
 import xyz.tekcor.juketify.client.library.Track;
 
 public final class JukeboxPlayback {
@@ -39,10 +40,14 @@ public final class JukeboxPlayback {
 	public static void stop() {
 		if (current != null) {
 			Minecraft.getInstance().getSoundManager().stop(current);
-			current = null;
-			currentTrack = null;
-			currentPos = null;
 		}
+
+		Minecraft.getInstance().getSoundManager()
+				.stop(JukeboxSoundInstance.STREAM_SOUND_ID, SoundSource.RECORDS);
+
+		current = null;
+		currentTrack = null;
+		currentPos = null;
 	}
 
 	public static void stopIfAt(BlockPos pos) {
