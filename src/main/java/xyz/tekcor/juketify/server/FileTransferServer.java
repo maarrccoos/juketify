@@ -21,6 +21,7 @@ public final class FileTransferServer {
 
 	private static final int MAX_IN_FLIGHT_CHUNKS = 2;
 	private static final int GLOBAL_CHUNKS_PER_TICK = 4;
+	private static final int STALL_LIMIT_TICKS = 100;
 
 	private static final Map<UUID, Deque<Transfer>> QUEUES = new HashMap<>();
 
@@ -82,10 +83,25 @@ public final class FileTransferServer {
 						transfer.fileName, transfer.pos, transfer.data.length, transfer.totalChunks)));
 			}
 
+			int sent = 0;
+
 			while (budget > 0 && transfer.inFlight.get() < MAX_IN_FLIGHT_CHUNKS
 					&& transfer.nextChunk < transfer.totalChunks) {
 				sendChunk(player, transfer);
 				budget--;
+				sent++;
+			}
+
+			if (sent > 0) {
+				transfer.stalledTicks = 0;
+			} else if (transfer.inFlight.get() > 0) {
+				transfer.stalledTicks++;
+
+				if (transfer.stalledTicks > STALL_LIMIT_TICKS) {
+					Juketify.LOGGER.warn("Transfer of {} stalled, forcing it along", transfer.fileName);
+					transfer.inFlight.set(0);
+					transfer.stalledTicks = 0;
+				}
 			}
 
 			if (transfer.nextChunk >= transfer.totalChunks && transfer.inFlight.get() == 0) {
@@ -129,6 +145,7 @@ public final class FileTransferServer {
 		final AtomicInteger inFlight = new AtomicInteger();
 		boolean started;
 		int nextChunk;
+		int stalledTicks;
 
 		Transfer(BlockPos pos, String fileName, byte[] data, int totalChunks) {
 			this.pos = pos;

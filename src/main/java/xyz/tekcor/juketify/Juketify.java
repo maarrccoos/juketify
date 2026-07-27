@@ -66,7 +66,7 @@ public class Juketify implements ModInitializer {
 
 	private static final int RANGE_CHECK_INTERVAL_TICKS = 20;
 	private static final long MAX_TRACK_LIFETIME_MILLIS = 20L * 60L * 1000L;
-	private static final long PREPARE_TIMEOUT_MILLIS = 120L * 1000L;
+	private static final long PREPARE_TIMEOUT_MILLIS = 20L * 1000L;
 	private static final int FILE_CACHE_SIZE = 3;
 
 	private record JukeboxKey(ResourceKey<Level> level, BlockPos pos) {
@@ -259,12 +259,17 @@ public class Juketify implements ModInitializer {
 		JukeboxPreparePayload prepare = new JukeboxPreparePayload(pos, fileName);
 
 		for (ServerPlayer player : PlayerLookup.around(level, pos, HEARING_RANGE)) {
+			if (!ServerPlayNetworking.canSend(player, JukeboxPreparePayload.TYPE)) {
+				continue;
+			}
+
 			pending.waitingOn.add(player.getUUID());
 			ServerPlayNetworking.send(player, prepare);
 		}
 
 		if (pending.waitingOn.isEmpty()) {
 			PENDING.remove(key);
+			startPlayback(level, key, fileName);
 		}
 	}
 
