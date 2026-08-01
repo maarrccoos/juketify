@@ -3,11 +3,15 @@
 <img src="src/client/resources/assets/juketify/icon.png" width="128" alt="icon">
 
 
-a better jukebox. right click ur jukebox, enter the music you wanna listen to and it'll find it and play it for you from the jukebox. everyone nearby hears it too, with real distance falloff.
+a better jukebox. right click ur jukebox, enter the music you wanna listen to and it'll find it and play it for everyone from the jukebox.
 
 if you don't already have the song it searches for it online, downloads it once, and it just plays for everyone in range after that.
 
 built for minecraft 26.1.2.
+
+## download
+
+get it from [curseforge](https://www.curseforge.com/minecraft/mc-mods/juketify), or grab the jar straight from [releases](https://github.com/maarrccoos/juketify/releases) and drop it in your `mods` folder. you need fabric loader and fabric api.
 
 ## setup
 
@@ -37,6 +41,8 @@ right click a jukebox with an empty hand to open it. holding a music disc still 
 
 you get a scrollable list of every track the server has, not just yours. click one to play it, or if something's already playing it goes on the queue instead. when a track ends the next one starts on its own.
 
+if you pick something only you have locally, it gets sent to the server automatically so everyone else can hear it too, same as an online search result.
+
 type in the box to filter the list. if nothing matches, hit enter and it searches online, downloads it, and adds it.
 
 - **stop** stops it and clears the queue for everyone in range
@@ -55,12 +61,6 @@ needs jdk 25, minecraft 26.1.2 requires it.
 ```
 
 jar ends up in `build/libs`. grab the plain one, not the `-sources` one.
-
-run a dev client:
-
-```
-./gradlew runClient
-```
 
 ## disclaimer
 
